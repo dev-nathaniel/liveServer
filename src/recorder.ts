@@ -13,11 +13,12 @@ export interface RecordSession {
   process: ChildProcess;
   sdpPath: string;
   mediaPath: string;
+  bucketName: string;
 }
 
 const activeRecordings = new Map<string, RecordSession>();
 
-export async function startRecording(router: Router, producer: Producer, userId: string): Promise<RecordSession> {
+export async function startRecording(router: Router, producer: Producer, userId: string, bucketName: string): Promise<RecordSession> {
   const audioPort = nextPort;
   nextPort += 2; // Jump by 2 for RTCP mapping safety
 
@@ -70,7 +71,8 @@ a=rtpmap:${pt} opus/48000/2
     consumer,
     process: ffmpegProcess,
     sdpPath,
-    mediaPath
+    mediaPath,
+    bucketName
   };
 
   activeRecordings.set(userId, session);
@@ -98,8 +100,8 @@ export async function stopRecording(userId: string) {
     
     // Upload the file
     if (fs.existsSync(session.mediaPath)) {
-      const destination = `encounters/${userId}_${Date.now()}.webm`;
-      await uploadFile(session.mediaPath, destination);
+      const destination = `liveServer/recordings/${userId}_${Date.now()}.webm`;
+      await uploadFile(session.mediaPath, destination, session.bucketName);
 
       fs.unlinkSync(session.mediaPath);
     }

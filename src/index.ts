@@ -256,14 +256,14 @@ io.on('connection', (socket: Socket) => {
     }
   });
 
-  socket.on('startRecording', async ({ roomId, producerId }, callback: Function) => {
+  socket.on('startRecording', async ({ roomId, producerId, bucketName }, callback: Function) => {
     try {
       const room = rooms.get(roomId);
       const peer = room?.peers.get(socket.id);
       const producer = peer?.producers.get(producerId);
       if (!room || !producer) throw new Error('Producer not found');
 
-      await startRecording(room.router, producer, user.userId);
+      await startRecording(room.router, producer, user.userId, bucketName);
       socket.to(roomId).emit('peerRecordingStarted', { peerId: socket.id });
       callback({ success: true });
     } catch (e: any) {

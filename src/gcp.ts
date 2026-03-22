@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 
 let storage: Storage | null = null;
-const keyPath = path.join(__dirname, '../../google-credentials.json');
+const keyPath = path.join(process.cwd(), 'google-credentials.json');
 
 if (fs.existsSync(keyPath)) {
   storage = new Storage({ keyFilename: keyPath });
@@ -11,9 +11,9 @@ if (fs.existsSync(keyPath)) {
   console.warn("WARNING: google-credentials.json not found. GCS Uploads will be skipped.");
 }
 
-export const bucketName = process.env.GCS_BUCKET_NAME || 'my-live-recordings';
+// export const bucketName = process.env.GCS_BUCKET_NAME || 'my-live-recordings';
 
-export async function uploadFile(filePath: string, destination: string) {
+export async function uploadFile(filePath: string, destination: string, bucketName: string) {
   if (!storage) {
     console.warn(`[GCS SKIP] Would have uploaded ${filePath} to gs://${bucketName}/${destination}`);
     return;
