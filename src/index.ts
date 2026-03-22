@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import { createWorkers, createWebRtcTransport } from './mediasoupManager';
 import { getOrCreateRoom, removePeerFromRoom, rooms } from './roomManager';
 import { verifyToken, generateToken } from './auth';
+import { startRecording, stopRecording } from './recorder';
 import { Peer, User } from './types';
 import { config } from './config';
 
@@ -71,8 +72,20 @@ io.on('connection', (socket: Socket) => {
 
     socket.join(roomId);
     
-    // Send router RTP capabilities
-    callback({ routerRtpCapabilities: room.router.rtpCapabilities });
+    // Notify existing users
+    socket.to(roomId).emit('peerJoined', { peerId: socket.id, userId: user.userId, role: user.role });
+
+    // Send router RTP capabilities and existing peers
+    callback({ 
+      routerRtpCapabilities: room.router.rtpCapabilities,
+      peers: Array.from(room.peers.values()).map(p => ({
+        peerId: p.socketId,
+        userId: p.user.userId,
+        role: p.user.role,
+        isMuted: Array.from(p.producers.values()).some(prod => prod.paused),
+        isRecording: false // default starting state
+      }))
+    });
   });
 
   socket.on('getProducers', ({ roomId }, callback: Function) => {
@@ -222,7 +235,56 @@ io.on('connection', (socket: Socket) => {
     }
   });
 
+  socket.on('toggleMic', async ({ roomId, producerId, isMuted }, callback: Function) => {
+    try {
+      const room = rooms.get(roomId);
+      const peer = room?.peers.get(socket.id);
+      const producer = peer?.producers.get(producerId);
+      if (!producer) throw new Error('Producer not found');
+
+      if (isMuted) {
+        await producer.pause();
+      } else {
+        await producer.resume();
+      }
+
+      socket.to(roomId).emit('peerMicToggled', { peerId: socket.id, isMuted });
+      callback({ success: true });
+    } catch (error: any) {
+      console.error(error);
+      callback({ error: error.message });
+    }
+  });
+
+  socket.on('startRecording', async ({ roomId, producerId }, callback: Function) => {
+    try {
+      const room = rooms.get(roomId);
+      const peer = room?.peers.get(socket.id);
+      const producer = peer?.producers.get(producerId);
+      if (!room || !producer) throw new Error('Producer not found');
+
+      await startRecording(room.router, producer, user.userId);
+      socket.to(roomId).emit('peerRecordingStarted', { peerId: socket.id });
+      callback({ success: true });
+    } catch (e: any) {
+      console.error(e);
+      callback({ error: e.message });
+    }
+  });
+
+  socket.on('stopRecording', async (callback: Function) => {
+    try {
+      await stopRecording(user.userId);
+      socket.to(user.roomId).emit('peerRecordingStopped', { peerId: socket.id });
+      callback({ success: true });
+    } catch (e: any) {
+      console.error(e);
+      callback({ error: e.message });
+    }
+  });
+
   socket.on('disconnect', () => {
+    stopRecording(user.userId).catch(() => {});
     console.log(`User ${user.userId} disconnected`);
     removePeerFromRoom(user.roomId, socket.id, io);
   });
