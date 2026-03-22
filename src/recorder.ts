@@ -43,7 +43,7 @@ export async function startRecording(router: Router, producer: Producer, userId:
   const pt = consumer.rtpParameters.codecs[0].payloadType;
   const sessionId = consumer.id;
   const sdpPath = `/tmp/record_${sessionId}.sdp`;
-  const mediaPath = `/tmp/record_${sessionId}.webm`;
+  const mediaPath = `/tmp/record_${sessionId}.m4a`;
 
   const sdpContent = `v=0
 o=- 0 0 IN IP4 127.0.0.1
@@ -59,7 +59,8 @@ a=rtpmap:${pt} opus/48000/2
   const ffmpegArgs = [
     '-protocol_whitelist', 'file,udp,rtp',
     '-i', sdpPath,
-    '-c:a', 'copy',
+    '-c:a', 'aac',    // Encode using Advanced Audio Codec (AAC)
+    '-b:a', '64k',    // 64kbps is excellent quality for voice 
     '-y',
     mediaPath
   ];
@@ -94,9 +95,9 @@ export async function stopRecording(userId: string) {
 
   session.consumer.close();
   session.transport.close();
-  console.log(`Stopping recording for ${userId}... Finalizing webm.`);
+  console.log(`Stopping recording for ${userId}... Finalizing m4a.`);
 
-  // Graceful kill allows FFmpeg to finalize the webm container headers
+  // Graceful kill allows FFmpeg to finalize the m4a container headers
   session.process.kill('SIGINT');
 
   session.process.on('close', async (code) => {
@@ -104,7 +105,7 @@ export async function stopRecording(userId: string) {
     
     // Upload the file
     if (fs.existsSync(session.mediaPath)) {
-      const destination = `liveServer/recordings/${userId}_${Date.now()}.webm`;
+      const destination = `liveServer/recordings/${userId}_${Date.now()}.m4a`;
       await uploadFile(session.mediaPath, destination, session.bucketName);
 
       fs.unlinkSync(session.mediaPath);

@@ -22,7 +22,7 @@ export async function uploadFile(filePath: string, destination: string, bucketNa
   try {
     await storage.bucket(bucketName).upload(filePath, {
       destination,
-      metadata: { contentType: 'audio/webm' },
+      metadata: { contentType: 'audio/mp4' },
     });
     console.log(`Uploaded ${filePath} to ${bucketName}/${destination}`);
   } catch (error) {
