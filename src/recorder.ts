@@ -28,7 +28,11 @@ export async function startRecording(router: Router, producer: Producer, userId:
     comedia: false
   });
 
-  await transport.connect({ ip: '127.0.0.1', port: audioPort });
+  await transport.connect({ 
+    ip: '127.0.0.1', 
+    port: audioPort,
+    rtcpPort: audioPort + 1
+  });
 
   const consumer = await transport.consume({
     producerId: producer.id,
