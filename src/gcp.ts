@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 
 let storage: Storage | null = null;
-const keyPath = path.join(process.cwd(), 'google-credentials.json');
+const keyPath = path.join(__dirname, '../google-credentials.json');
 
 if (fs.existsSync(keyPath)) {
   storage = new Storage({ keyFilename: keyPath });
