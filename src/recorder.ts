@@ -2,12 +2,14 @@ import { spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
 import { Router, Producer, PlainTransport, Consumer } from 'mediasoup/node/lib/types';
 import { uploadFile } from './gcp';
+import axios from 'axios';
 
 let nextPort = 50000;
 
 export interface RecordSession {
   id: string;
   userId: string;
+  eventId: string; // Added eventId
   transport: PlainTransport;
   consumer: Consumer;
   process: ChildProcess;
@@ -18,7 +20,7 @@ export interface RecordSession {
 
 const activeRecordings = new Map<string, RecordSession>();
 
-export async function startRecording(router: Router, producer: Producer, userId: string, bucketName: string): Promise<RecordSession> {
+export async function startRecording(router: Router, producer: Producer, userId: string, bucketName: string, eventId: string): Promise<RecordSession> {
   const audioPort = nextPort;
   nextPort += 2; // Jump by 2 for RTCP mapping safety
 
@@ -72,6 +74,7 @@ a=rtpmap:${pt} opus/48000/2
   const session: RecordSession = {
     id: sessionId,
     userId,
+    eventId, // Store eventId
     transport,
     consumer,
     process: ffmpegProcess,
@@ -83,7 +86,7 @@ a=rtpmap:${pt} opus/48000/2
   activeRecordings.set(userId, session);
   await consumer.resume();
 
-  console.log(`Recording started for ${userId} on port ${audioPort}`);
+  console.log(`Recording started for ${userId} (event ${eventId}) on port ${audioPort}`);
   return session;
 }
 
@@ -106,9 +109,41 @@ export async function stopRecording(userId: string) {
     // Upload the file
     if (fs.existsSync(session.mediaPath)) {
       const destination = `liveServer/recordings/${userId}_${Date.now()}.m4a`;
-      await uploadFile(session.mediaPath, destination, session.bucketName);
+      const bucketName = session.bucketName;
+      
+      try {
+        const cloudUrl = await uploadFile(session.mediaPath, destination, bucketName, true);
+        if (!cloudUrl) {
+          throw new Error('GCS Upload failed to return a URL');
+        }
+        
+        console.log(`[RECORDER] Uploaded to GCS: ${destination}`);
 
-      fs.unlinkSync(session.mediaPath);
+        // Notify main backend
+        const mainBackendUrl = process.env.MAIN_BACKEND_URL || 'http://localhost:8000';
+        const recordingUrl = cloudUrl;
+        
+        // Find the event ID - we might need to store it in the session
+        // For now, let's assume session.id is related or we need to pass it
+        // Looking at LiveServerContext,roomId is used as currentChannel
+        // Let's check how to get eventId. 
+        // I'll add eventId to RecordSession.
+        
+        const eventId = (session as any).eventId; 
+        if (eventId) {
+            await axios.post(`${mainBackendUrl}/api/stream/liveserver/recording-finished`, {
+                eventId,
+                userId,
+                recordingUrl
+            });
+            console.log(`[RECORDER] Notified main backend for event ${eventId}`);
+        }
+
+      } catch (err) {
+        console.error(`[RECORDER] Error during upload/notification:`, err);
+      } finally {
+        fs.unlinkSync(session.mediaPath);
+      }
     }
 
     if (fs.existsSync(session.sdpPath)) {

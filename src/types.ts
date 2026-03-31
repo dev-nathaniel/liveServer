@@ -1,10 +1,11 @@
 import { Transport, Producer, Consumer } from 'mediasoup/node/lib/types';
 
-export type Role = 'speaker' | 'listener';
+export type Role = 'broadcaster' | 'audience';
 
 export interface User {
   userId: string;
-  name?: string;
+  username?: string;
+  profilePicture?: string | null;
   role: Role;
 }
 

@@ -1,16 +1,16 @@
+import dotenv from 'dotenv';
+dotenv.config(); // Must run before importing config.ts so env vars are available
+
 import express from 'express';
 import http from 'http';
 import { Server, Socket } from 'socket.io';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import { createWorkers, createWebRtcTransport } from './mediasoupManager';
 import { getOrCreateRoom, removePeerFromRoom, rooms } from './roomManager';
 import { verifyToken, generateToken } from './auth';
 import { startRecording, stopRecording } from './recorder';
-import { Peer, User } from './types';
+import { Peer, User, Role } from './types';
 import { config } from './config';
-
-dotenv.config();
 
 const app = express();
 app.use(cors());
@@ -28,64 +28,109 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', activeRooms: rooms.size });
 });
 
-// Basic endpoint to generate a token for testing
+// Endpoint to generate a token
 app.post('/api/token', (req, res) => {
-  const { userId, role, roomId } = req.body;
-  if (!userId || !role || !roomId) {
+  const { userId, role, channelName, expiresIn, username, profilePicture } = req.body;
+  if (!userId || !role || !channelName) {
     return res.status(400).json({ error: 'Missing parameters' });
   }
-  const token = generateToken({ userId, role, roomId });
+  const token = generateToken(
+    { userId, role: role as Role, channelName, username, profilePicture },
+    expiresIn || '2h'
+  );
   res.json({ token });
 });
 
-// Middleware for Socket.io authentication
+// Middleware for Socket.io — accept userId only (auth happens at joinRoom)
 io.use((socket, next) => {
-  const token = socket.handshake.auth.token;
-  if (!token) return next(new Error('Authentication error'));
-  
-  const payload = verifyToken(token);
-  if (!payload) return next(new Error('Invalid token'));
-  
-  // Attach user to socket
-  (socket as any).user = payload;
+  const userId = socket.handshake.auth.userId;
+  if (!userId) return next(new Error('Missing userId'));
+  (socket as any).userId = userId as string;
+  (socket as any).currentRoom = null as string | null;
+  (socket as any).user = null as (User & { channelName: string }) | null;
   next();
 });
 
 io.on('connection', (socket: Socket) => {
-  const user = (socket as any).user as User & { roomId: string };
-  console.log(`User ${user.userId} connected to room ${user.roomId}`);
+  const socketUserId = (socket as any).userId as string;
+  console.log(`Socket connected: userId=${socketUserId}`);
 
-  socket.on('joinRoom', async (roomId: string, callback: Function) => {
-    if (user.roomId !== roomId) {
-      return callback({ error: 'Token not valid for this room' });
+  socket.on('joinRoom', async ({ channelName, token }: { channelName: string; token: string }, callback: Function) => {
+    try {
+      // Verify the room-specific token
+      const payload = verifyToken(token);
+      if (!payload || payload.channelName !== channelName) {
+        return callback({ error: 'Invalid or mismatched token' });
+      }
+
+      // Leave previous room if already in one
+      const prevRoom = (socket as any).currentRoom as string | null;
+      if (prevRoom) {
+        await stopRecording(socketUserId).catch(() => {});
+        removePeerFromRoom(prevRoom, socket.id, io);
+        socket.leave(prevRoom);
+      }
+
+      // Attach authenticated user data for this room
+      const user: User = { 
+        userId: payload.userId, 
+        role: payload.role,
+        username: payload.username,
+        profilePicture: payload.profilePicture
+      };
+      (socket as any).user = { ...user, channelName };
+      (socket as any).currentRoom = channelName;
+
+      const room = await getOrCreateRoom(channelName);
+
+      room.peers.set(socket.id, {
+        socketId: socket.id,
+        user,
+        transports: new Map(),
+        producers: new Map(),
+        consumers: new Map(),
+      });
+
+      socket.join(channelName);
+
+      // Notify existing users with full metadata
+      socket.to(channelName).emit('peerJoined', { 
+        peerId: socket.id, 
+        userId: user.userId, 
+        role: user.role,
+        username: user.username,
+        profilePicture: user.profilePicture
+      });
+
+      // Send router RTP capabilities and existing peers with metadata
+      callback({
+        routerRtpCapabilities: room.router.rtpCapabilities,
+        peers: Array.from(room.peers.values()).map(p => ({
+          peerId: p.socketId,
+          userId: p.user.userId,
+          role: p.user.role,
+          username: p.user.username,
+          profilePicture: p.user.profilePicture,
+          isMuted: Array.from(p.producers.values()).some(prod => prod.paused),
+          isRecording: false
+        }))
+      });
+    } catch (error: any) {
+      console.error(error);
+      callback({ error: error.message });
     }
+  });
 
-    const room = await getOrCreateRoom(roomId);
-    
-    room.peers.set(socket.id, {
-      socketId: socket.id,
-      user,
-      transports: new Map(),
-      producers: new Map(),
-      consumers: new Map(),
-    });
-
-    socket.join(roomId);
-    
-    // Notify existing users
-    socket.to(roomId).emit('peerJoined', { peerId: socket.id, userId: user.userId, role: user.role });
-
-    // Send router RTP capabilities and existing peers
-    callback({ 
-      routerRtpCapabilities: room.router.rtpCapabilities,
-      peers: Array.from(room.peers.values()).map(p => ({
-        peerId: p.socketId,
-        userId: p.user.userId,
-        role: p.user.role,
-        isMuted: Array.from(p.producers.values()).some(prod => prod.paused),
-        isRecording: false // default starting state
-      }))
-    });
+  socket.on('leaveRoom', async (callback: Function) => {
+    const roomId = (socket as any).currentRoom as string | null;
+    if (roomId) {
+      await stopRecording(socketUserId).catch(() => {});
+      removePeerFromRoom(roomId, socket.id, io);
+      socket.leave(roomId);
+      (socket as any).currentRoom = null;
+      (socket as any).user = null;
+    }
+    callback?.({ success: true });
   });
 
   socket.on('getProducers', ({ roomId }, callback: Function) => {
@@ -146,7 +191,8 @@ io.on('connection', (socket: Socket) => {
 
   socket.on('produce', async ({ roomId, transportId, kind, rtpParameters }, callback: Function) => {
     try {
-      if (user.role !== 'speaker') {
+      const user = (socket as any).user as (User & { channelName: string }) | null;
+      if (!user || user.role !== 'broadcaster') {
         throw new Error('Not authorized to produce');
       }
 
@@ -256,14 +302,15 @@ io.on('connection', (socket: Socket) => {
     }
   });
 
-  socket.on('startRecording', async ({ roomId, producerId, bucketName }, callback: Function) => {
+  socket.on('startRecording', async (data: { roomId: string, producerId: string, bucketName: string, eventId: string }, callback: Function) => {
     try {
+      const { roomId, producerId, bucketName, eventId } = data;
       const room = rooms.get(roomId);
       const peer = room?.peers.get(socket.id);
       const producer = peer?.producers.get(producerId);
       if (!room || !producer) throw new Error('Producer not found');
 
-      await startRecording(room.router, producer, user.userId, bucketName);
+      await startRecording(room.router, producer, socketUserId, bucketName, eventId);
       socket.to(roomId).emit('peerRecordingStarted', { peerId: socket.id });
       callback({ success: true });
     } catch (e: any) {
@@ -274,8 +321,11 @@ io.on('connection', (socket: Socket) => {
 
   socket.on('stopRecording', async (callback: Function) => {
     try {
-      await stopRecording(user.userId);
-      socket.to(user.roomId).emit('peerRecordingStopped', { peerId: socket.id });
+      const currentRoom = (socket as any).currentRoom as string | null;
+      await stopRecording(socketUserId);
+      if (currentRoom) {
+        socket.to(currentRoom).emit('peerRecordingStopped', { peerId: socket.id });
+      }
       callback({ success: true });
     } catch (e: any) {
       console.error(e);
@@ -284,9 +334,12 @@ io.on('connection', (socket: Socket) => {
   });
 
   socket.on('disconnect', () => {
-    stopRecording(user.userId).catch(() => {});
-    console.log(`User ${user.userId} disconnected`);
-    removePeerFromRoom(user.roomId, socket.id, io);
+    const currentRoom = (socket as any).currentRoom as string | null;
+    stopRecording(socketUserId).catch(() => {});
+    console.log(`User ${socketUserId} disconnected`);
+    if (currentRoom) {
+      removePeerFromRoom(currentRoom, socket.id, io);
+    }
   });
 });
 
