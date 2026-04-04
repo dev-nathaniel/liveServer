@@ -9,6 +9,7 @@ export interface TokenPayload {
   profilePicture: string | null;
   role: Role;
   channelName: string;
+  eventId?: string;
 }
 
 export function generateToken(payload: TokenPayload, expiresIn: SignOptions['expiresIn'] = '2h'): string {

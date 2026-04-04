@@ -7,6 +7,8 @@ export interface User {
   username?: string;
   profilePicture?: string | null;
   role: Role;
+  channelName: string;
+  eventId?: string;
 }
 
 export interface Peer {

@@ -20,7 +20,12 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: '*',
-  }
+    methods: ["GET", "POST"]
+  },
+  transports: ['websocket', 'polling'], // Allow falling back to polling if websocket fails
+  allowEIO3: true, // For older clients if any
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
 // Health check endpoint
@@ -76,9 +81,11 @@ io.on('connection', (socket: Socket) => {
         userId: payload.userId, 
         role: payload.role,
         username: payload.username,
-        profilePicture: payload.profilePicture
+        profilePicture: payload.profilePicture,
+        channelName,
+        eventId: (payload as any).eventId // Ensure eventId is carried over from token if available
       };
-      (socket as any).user = { ...user, channelName };
+      (socket as any).user = user;
       (socket as any).currentRoom = channelName;
 
       const room = await getOrCreateRoom(channelName);
@@ -123,7 +130,9 @@ io.on('connection', (socket: Socket) => {
 
   socket.on('leaveRoom', async (callback: Function) => {
     const roomId = (socket as any).currentRoom as string | null;
+    console.log(`Socket ${socket.id} leaving room ${roomId}`);
     if (roomId) {
+      console.log(`Stopping recording for ${socketUserId}...`);
       await stopRecording(socketUserId).catch(() => {});
       removePeerFromRoom(roomId, socket.id, io);
       socket.leave(roomId);
@@ -310,7 +319,7 @@ io.on('connection', (socket: Socket) => {
       const producer = peer?.producers.get(producerId);
       if (!room || !producer) throw new Error('Producer not found');
 
-      await startRecording(room.router, producer, socketUserId, bucketName, eventId);
+      await startRecording(room.router, producer, socket.id, socketUserId, bucketName, eventId, roomId);
       socket.to(roomId).emit('peerRecordingStarted', { peerId: socket.id });
       callback({ success: true });
     } catch (e: any) {
@@ -336,7 +345,7 @@ io.on('connection', (socket: Socket) => {
   socket.on('disconnect', () => {
     const currentRoom = (socket as any).currentRoom as string | null;
     stopRecording(socketUserId).catch(() => {});
-    console.log(`User ${socketUserId} disconnected`);
+    console.log(`User ${socketUserId} (socket ${socket.id}) disconnected`);
     if (currentRoom) {
       removePeerFromRoom(currentRoom, socket.id, io);
     }
